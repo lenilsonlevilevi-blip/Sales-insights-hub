@@ -5,6 +5,7 @@ export function useSalesWorker() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalysisResult | null>(null);
+
   const workerRef = useRef<Worker | null>(null);
 
   const processFile = useCallback((file: File) => {
@@ -19,20 +20,27 @@ export function useSalesWorker() {
       new URL("../lib/sales-worker.ts", import.meta.url),
       { type: "module" }
     );
+
     workerRef.current = worker;
 
     worker.onmessage = (e) => {
+      console.log("10 - React recebeu:", e.data);
+
       const { ok, result, error } = e.data;
+
       if (ok) {
         setResult(result);
       } else {
         setError(error ?? "Erro ao processar arquivo.");
       }
+
       setLoading(false);
       worker.terminate();
     };
 
     worker.onerror = (e) => {
+      console.error("ERRO NO WORKER:", e);
+
       setError(e.message ?? "Erro no worker.");
       setLoading(false);
       worker.terminate();
@@ -41,5 +49,10 @@ export function useSalesWorker() {
     worker.postMessage({ file });
   }, []);
 
-  return { processFile, loading, error, result };
+  return {
+    processFile,
+    loading,
+    error,
+    result,
+  };
 }
