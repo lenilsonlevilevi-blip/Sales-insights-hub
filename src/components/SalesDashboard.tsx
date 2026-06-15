@@ -241,7 +241,7 @@ function Dashboard({ result, fileName }: { result: AnalysisResult; fileName: str
         ))}
       </div>
 
-      <CategoriaBI rows={result.rows} />
+      {/* <CategoriaBI rows={result.rows} /> */}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <ChartCard title="Vendas por período" subtitle="Receita acumulada por mês (Data da Venda)">
