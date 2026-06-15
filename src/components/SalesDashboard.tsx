@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Upload,
   FileSpreadsheet,
@@ -20,8 +20,6 @@ import {
   CartesianGrid,
   Cell,
   Legend,
-  Line,
-  LineChart,
   Pie,
   PieChart,
   ResponsiveContainer,
@@ -29,7 +27,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { analyze, formatCurrency, parseFile, type AnalysisResult, type SalesRow } from "@/lib/sales-analyzer";
+import { formatCurrency, type AnalysisResult, type SalesRow } from "@/lib/sales-analyzer";
+import { useSalesWorker } from "@/hooks/useSalesWorker";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -52,51 +51,13 @@ const CHART_COLORS = [
 ];
 
 export function SalesDashboard() {
-  const [result, setResult] = useState<AnalysisResult | null>(null);
   const [fileName, setFileName] = useState<string>("");
-  const [error, setError] = useState<string>("");
-  const [loading, setLoading] = useState(false);
-  const [apiStatus, setApiStatus] = useState<string>("");
+  const { processFile, loading, error, result } = useSalesWorker();
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const PYTHON_API_URL = "https://gymapi-sfss.onrender.com/sellers";
-
-    fetch(PYTHON_API_URL, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        console.log("[Python API] resposta:", data);
-        setApiStatus("conectado");
-      })
-      .catch((err) => {
-        if (err.name === "AbortError") return;
-        console.warn("[Python API] erro de conexão:", err);
-        setApiStatus("offline");
-      });
-
-    return () => controller.abort();
-  }, []);
-
-  const handleFile = useCallback(async (file: File) => {
-    setError("");
-    setLoading(true);
-    try {
-      const rows = await parseFile(file);
-      const r = analyze(rows);
-      setResult(r);
-      setFileName(file.name);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Erro ao processar arquivo.");
-      setResult(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const handleFile = (file: File) => {
+    setFileName(file.name);
+    processFile(file);
+  };
 
   const onInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -126,18 +87,12 @@ export function SalesDashboard() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {apiStatus && (
-              <span className="text-xs text-muted-foreground">
-                API Python: <strong className="text-foreground">{apiStatus}</strong>
-              </span>
-            )}
             {result && (
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setResult(null);
-                  setFileName("");
+                  window.location.reload();
                 }}
               >
                 Nova análise
@@ -206,6 +161,12 @@ function UploadZone({
         <p className="mt-1 text-sm text-muted-foreground">Formatos suportados: .xlsx, .xls, .csv</p>
         <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onInput} disabled={loading} />
       </label>
+
+      {loading && (
+        <div className="mt-4 rounded-lg border border-primary/30 bg-primary/5 p-4 text-sm text-muted-foreground text-center">
+          Analisando sua planilha em background... isso pode levar alguns segundos.
+        </div>
+      )}
 
       {error && (
         <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
@@ -301,7 +262,6 @@ function Dashboard({ result, fileName }: { result: AnalysisResult; fileName: str
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
-
 
         <ChartCard title="Faturamento por vendedor" subtitle="Receita acumulada por vendedor">
           <ResponsiveContainer width="100%" height={300}>
@@ -452,7 +412,6 @@ function periodKey(d: Date, p: PeriodType): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   if (p === "mensal") return `${y}-${m}`;
   if (p === "diario") return `${y}-${m}-${String(d.getDate()).padStart(2, "0")}`;
-  // semanal: ISO week-ish — year-Www based on Monday
   const tmp = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const dayNum = tmp.getUTCDay() || 7;
   tmp.setUTCDate(tmp.getUTCDate() + 4 - dayNum);
@@ -473,7 +432,6 @@ function CategoriaBI({ rows }: { rows: SalesRow[] }) {
     return [...s].sort();
   }, [validRows]);
 
-  // Build chart data
   const { chartData, categoriesShown } = useMemo(() => {
     const filtered = categoria === "__ALL__" ? validRows : validRows.filter((r) => r.categoria === categoria);
     const cats = categoria === "__ALL__" ? categorias : [categoria];
@@ -493,7 +451,6 @@ function CategoriaBI({ rows }: { rows: SalesRow[] }) {
     return { chartData: data, categoriesShown: cats };
   }, [validRows, categorias, categoria, period]);
 
-  // KPIs current vs previous period (entire window vs equal previous window)
   const kpis = useMemo(() => {
     const filtered = categoria === "__ALL__" ? validRows : validRows.filter((r) => r.categoria === categoria);
     if (!filtered.length) {
@@ -503,19 +460,9 @@ function CategoriaBI({ rows }: { rows: SalesRow[] }) {
     const first = sorted[0].data.getTime();
     const last = sorted[sorted.length - 1].data.getTime();
     const span = Math.max(last - first, 86400000);
-    const prevStart = first - span;
-    const atual = sorted.filter((r) => r.data.getTime() >= first);
-    // "previous period" = equal-length window immediately before; we only have data inside [first,last]
-    // so we use the first half vs second half if no real previous data exists
-    let anteriorRows: SalesRow[];
-    const hasPrev = false; // we don't have data before `first` by definition
-    if (hasPrev) {
-      anteriorRows = sorted.filter((r) => r.data.getTime() >= prevStart && r.data.getTime() < first);
-    } else {
-      const mid = first + span / 2;
-      anteriorRows = sorted.filter((r) => r.data.getTime() < mid);
-    }
-    const atualRows = hasPrev ? atual : sorted.filter((r) => r.data.getTime() >= first + span / 2);
+    const mid = first + span / 2;
+    const anteriorRows = sorted.filter((r) => r.data.getTime() < mid);
+    const atualRows = sorted.filter((r) => r.data.getTime() >= mid);
     const receitaAtual = atualRows.reduce((s, r) => s + r.valor, 0);
     const receitaAnterior = anteriorRows.reduce((s, r) => s + r.valor, 0);
     const vendas = atualRows.length;
@@ -680,7 +627,6 @@ function CategoriaBI({ rows }: { rows: SalesRow[] }) {
         Período: <strong className="text-foreground">{PERIOD_LABEL[period]}</strong> · Comparativo entre a segunda
         metade e a primeira metade do intervalo dos dados.
       </p>
-
     </Card>
   );
 }
